@@ -4,7 +4,7 @@ A full-stack developer blogging platform: write posts in Markdown with live prev
 
 Frontend and backend are one **Next.js 15** app (App Router, JavaScript). The REST API is implemented as Route Handlers under `app/api/**`, so there is no separate server.
 
-**Live demo:** _not deployed yet. Add your Vercel URL here after following [Deploy to Vercel](#deploy-to-vercel)._
+**Live demo:** https://devlog-iota-green.vercel.app
 
 ## Stack
 
@@ -17,6 +17,8 @@ Frontend and backend are one **Next.js 15** app (App Router, JavaScript). The RE
 | Passwords | `bcryptjs` (12 rounds) |
 | Styling | Tailwind CSS v4 + `@tailwindcss/typography` |
 | Markdown | `react-markdown` + `remark-gfm` + `rehype-sanitize` + `rehype-highlight` |
+| Cache | Optional Redis on [Upstash](https://upstash.com) (`@upstash/redis`, REST): public pages + signed-in user lookups |
+| Hosting | Vercel, functions pinned to Singapore (`sin1`, `vercel.json`) next to the database |
 
 ## Quick start (local)
 
@@ -43,6 +45,30 @@ Row Level Security is enabled on every table with no policies. The app connects 
 
 Free Supabase projects **pause after a week with no activity**. Resume them from the dashboard. While paused, the API answers `503`.
 
+**Keep the code next to the database.** Every query is a network round trip, so the Vercel functions must run in the same region as Supabase. `vercel.json` pins them to `sin1` (Singapore). If your Supabase project is somewhere else, change `regions` to the matching [Vercel region](https://vercel.com/docs/edge-network/regions). Running Washington against Singapore made login take several seconds.
+
+### Redis cache (optional)
+
+When Upstash Redis is configured, public reads come from Redis instead of Postgres:
+- the feed (first 5 pages, all posts or one tag)
+- single posts
+- tags
+- tag pages
+- profiles
+- the home stats
+
+The signed-in user lookup that runs on every authenticated request is cached too. Without Redis, nothing changes; the app reads Postgres directly.
+
+- **Always fresh:** each cached entry records the "content version" it was built at. Every write that can change a public page bumps that version right after the database write: publishing, editing, deleting, liking, commenting, or renaming yourself. So the next read rebuilds the entry, and nothing waits for a TTL. Entries expire after 5 minutes regardless.
+- **Never cached:** drafts, anything per-viewer (your like state, your dashboard, the editor), and free-text search results. Keys come only from bounded sets, so random URLs can't fill Redis.
+- **Can't break the site:** if Redis errors or takes more than 500 ms, the request falls back to Postgres and Redis is skipped for 30 seconds.
+
+Setup:
+1. **On Vercel:** go to Project → **Storage** → **Create Database** → **Upstash for Redis**. Pick the **Singapore (ap-southeast-1)** region and connect it to this project. That adds `KV_REST_API_URL` / `KV_REST_API_TOKEN`, which the app reads. Then redeploy.
+2. **Locally (optional):** copy the database's **REST URL** and **token** from [console.upstash.com](https://console.upstash.com) into `.env.local` as `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`.
+
+`npm run seed` also clears the cache when Redis is configured.
+
 Seed accounts (password `password123` for both): `maya@devlog.dev` and `leo@devlog.dev`.
 
 Production build:
@@ -61,6 +87,7 @@ npm start
 | `NEXT_PUBLIC_APP_URL` | recommended | Public base URL, no trailing slash (e.g. `http://localhost:3000`). Used for canonical/OpenGraph URLs. |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | production | SMTP server for OTP emails. For Gmail: `smtp.gmail.com`, `587`, your address, and an [App Password](https://myaccount.google.com/apppasswords) (2-Step Verification must be on). |
 | `EMAIL_FROM` | optional | Sender, e.g. `"DevLog <you@gmail.com>"`. Defaults to `SMTP_USER`. |
+| `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | optional | Turn on the [Redis cache](#redis-cache-optional). Vercel's Upstash integration sets `KV_REST_API_URL` / `KV_REST_API_TOKEN` instead; both pairs work. |
 
 **No SMTP in development?** Leave the `SMTP_*` values empty. The OTP is then printed in the terminal running `npm run dev` (look for `[DevLog] SMTP not configured`), so you can still sign up locally. In production, sending fails with an error if SMTP isn't configured.
 
@@ -105,8 +132,10 @@ lib/
   data.js                    read queries shared by Server Components and the API
   posts.js                   create/update logic (slugs, tags, excerpt, publish rules)
   engagement.js, otp.js      likes/comments, one-time codes
+  cache.js                   optional Upstash Redis cache (content versioning, fallback to DB)
   slug.js, tags.js           slug generation + tag upsert
 middleware.js                edge JWT check for /dashboard, /editor/*, /settings
+vercel.json                  pins functions to sin1 (same region as the database)
 scripts/db-setup.js          applies db/schema.sql
 scripts/seed.js              seed data
 ```
@@ -117,6 +146,7 @@ scripts/seed.js              seed data
 - **Email OTP verification:** sign-up creates an *unverified* account and emails a 6-digit code. The account can't log in until `POST /api/auth/verify-email` accepts the code; that call also logs the user in. Logging in with the right password but an unverified email returns `403 { requiresVerification: true }` and sends a fresh code, and the UI sends the user to `/verify-email`.
 - **Forgot password:** `/forgot-password` emails a reset code; entering it plus a new password resets it and logs the user in.
 - **OTP rules:** codes are 6 digits, expire after 10 minutes, and are single-use. Each code is tied to its purpose, so a verification code can't reset a password. Only an HMAC-SHA256 of each code is stored, and expired codes are swept whenever a new one is issued. Resends have a 60-second cooldown (`429`), enforced inside the upsert, so it's race-free. After 5 wrong attempts the code is locked, and the counter is updated atomically (`update … set attempts = attempts + 1 … returning`). The forgot-password and resend endpoints give the same response whether or not an account exists.
+- **Emails are sent after the response** (Next.js `after()`, which uses `waitUntil` on Vercel). SMTP takes seconds, and nobody has to wait for it. This also means forgot-password answers in the same time whether or not the account exists. If a send fails, the error is logged and the code is dropped, so the user can press **Resend** at once. A production server with no SMTP configured still refuses up front with `502`.
 - Once verified (or on login), the server signs a JWT (`sub` = user id, 7-day expiry). It sets the token as an **httpOnly, SameSite=Lax** cookie (`Secure` in production) and also returns it in the JSON body for API clients.
 - `lib/auth.js#getAuthUser(request)` reads `Authorization: Bearer <token>` first, then falls back to the cookie. It verifies the signature and expiry and loads the user from Postgres. Every protected handler calls `requireAuth(request)`.
 - `middleware.js` verifies the cookie at the edge and redirects `/dashboard`, `/editor/*` and `/settings` to `/login?from=<path>`. The API still re-checks auth itself; it never relies on middleware.
@@ -243,6 +273,8 @@ In Postman, set **Authorization → Bearer Token** to the `token` returned by lo
 2. **Push this repo to GitHub**, then import it at [vercel.com/new](https://vercel.com/new). The framework preset (Next.js) is auto-detected.
 3. **Environment variables** (Project → Settings → Environment Variables, for Production and Preview):
    - `DATABASE_URL`: the Supabase Transaction pooler URI
+   - Optional: connect **Upstash for Redis** under Project → Storage (Singapore region). It adds the `KV_REST_API_*` variables, which turn on the [Redis cache](#redis-cache-optional).
+   - The function region comes from `vercel.json` (`sin1`). Keep it in the same region as Supabase.
    - `JWT_SECRET`: a new random secret (don't reuse your local one)
    - `NEXT_PUBLIC_APP_URL`: e.g. `https://devlog-yourname.vercel.app`
    - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM`: required, or sign-up emails fail
@@ -267,5 +299,3 @@ These were checked against both `next dev` and the production build (`next build
 - Middleware redirects logged-out users from `/dashboard`, `/editor/*` and `/settings` to `/login?from=…`. A non-owner opening `/editor/:id` sees a 403 page and no post data.
 - Browser flow works: register → write a draft → publish → appears on the feed → edit → update the profile → delete via the confirm dialog → log out.
 - No horizontal scroll at 375px on any page; no browser console errors.
-#   D e v l o g  
- 

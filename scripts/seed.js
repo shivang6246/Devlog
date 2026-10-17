@@ -16,6 +16,7 @@ import postgres from 'postgres';
 import { pgOptions } from '../lib/pg-options.js';
 import { slugify } from '../lib/slug.js';
 import { excerptFromMarkdown } from '../lib/excerpt.js';
+import { bumpContentVersion, forgetUser } from '../lib/cache.js';
 
 dotenv.config({ path: '.env.local', quiet: true });
 dotenv.config({ quiet: true });
@@ -419,8 +420,12 @@ async function main() {
       likeTotal += likers.length;
       commentTotal += thread.length;
     }
-    return { likeTotal, commentTotal };
+    return { likeTotal, commentTotal, removedIds: removed.map((r) => r.id) };
   });
+
+  // If Redis is configured, cached pages and sessions must not keep the old seed data.
+  await bumpContentVersion();
+  await Promise.all(totals.removedIds.map((id) => forgetUser(id)));
 
   const published = POSTS.filter((p) => (p.status || 'published') === 'published').length;
   console.log(`✔ Seeded ${USERS.length} users, ${TAGS.length} tags, ${POSTS.length} posts (${published} published, ${POSTS.length - published} draft), ${totals.likeTotal} likes, ${totals.commentTotal} comments`);

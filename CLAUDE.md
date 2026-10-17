@@ -14,12 +14,17 @@ A full-stack developer blogging platform (a Hashnode clone). **One Next.js app i
 | 7. "Museum" dark theme redesign (inspired by Sandhill Studio's *Lourve* concept) | ✅ done + verified (desktop + 375px screenshots; e2e, OTP UI and public-page suites all pass) |
 | 6. Email OTP auth (sign-up verification + forgot password) | ✅ done + verified (27 API + 14 browser checks; earlier suites re-run with no regressions) |
 | 8. Likes, comments, share + light/dark mode | ✅ done + verified (36 API + 35 browser checks; all earlier suites and the responsive audit re-run with no regressions) |
-| 9. MongoDB → Supabase Postgres (postgres.js, plain SQL, `db/schema.sql`) | ✅ code done + verified on local Postgres 17 (167 API + 18 page + 23 prod-build checks). ⏳ **needs the real Supabase `DATABASE_URL` in `.env.local`, then `npm run db:setup` + `npm run seed`** |
+| 9. MongoDB → Supabase Postgres (postgres.js, plain SQL, `db/schema.sql`) | ✅ done + verified (local Postgres 17: 167 API + 18 page + 23 prod-build checks; real Supabase via the transaction pooler: 11-check smoke test). Schema + seed applied to Supabase |
+| 10. Speed: functions in `sin1`, OTP email after the response, optional Upstash Redis cache | ✅ code done + verified locally (15 cache unit + 29 cache integration + 167 API with Redis on + 167 API with Redis off + 11 prod-build checks; Redis outage/slowness, SMTP failure). Uses a mock Upstash REST server; no real Upstash DB yet. ⏳ **not pushed/deployed yet** |
 
 Phase 9 was verified on a local Postgres 17 (UTF-8) using `next dev` and `next build && next start`. All API responses keep the old shape (`_id`, camelCase, embedded `author`/`tags`), so no UI code changed. The Playwright browser suite was **not** re-run after the migration.
 
 ### Open TODOs
-- [ ] Create the Supabase project, put its **Transaction pooler** URI in `.env.local` as `DATABASE_URL` (no quotes, no trailing `;`), then run `npm run db:setup` and `npm run seed`. The old `MONGODB_URI` line is unused and can be deleted. Atlas data was **not** copied over.
+- [x] Supabase project `vghcurikulhxnwtdmxxd` (Singapore). `.env.local` uses the **transaction pooler** `aws-0-ap-southeast-1.pooler.supabase.com:6543`, user `postgres.vghcurikulhxnwtdmxxd`. Schema + seed applied. The old `MONGODB_URI` line is unused and can be deleted. Atlas data was **not** copied over.
+- [ ] **Rotate the Supabase DB password.** It was pasted into a chat on 2026-10-17. Then update `.env.local` and Vercel.
+- [x] Deployed: `https://devlog-iota-green.vercel.app`. Its `DATABASE_URL` is the pooler URI. Verified 2026-10-17: feed, tags, post pages, login, draft 404. The URL is in README.md.
+- [ ] Push phase 10 to `main` so Vercel redeploys. `vercel.json` moves the functions from `iad1` (Washington) to `sin1`, next to the Singapore DB; the 1–3 s pages and slow login came from that distance.
+- [ ] Create an Upstash Redis DB (Vercel → Storage → Upstash for Redis, region Singapore, connect to the project), then redeploy. Without it the cache is simply off.
 - [x] SMTP (Gmail app password) set in `.env.local`. Verified 2026-10-17: Gmail accepts the login, and a real sign-up OTP email was sent from the production build.
 - [ ] Deploy to Vercel + Supabase (steps in README.md), then put the live URL in README.md.
 - [ ] `git init` and make the first commit. The folder is not a git repo yet.
@@ -35,6 +40,8 @@ Phase 9 was verified on a local Postgres 17 (UTF-8) using `next dev` and `next b
 - **Styling:** Tailwind CSS v4 (`@tailwindcss/postcss`) + `@tailwindcss/typography`. Light + dark themes via `[data-theme]` CSS variables (default dark, toggle saved in localStorage).
 - **Markdown:** `react-markdown` + `remark-gfm` + `rehype-sanitize` + `rehype-highlight` (the `highlight.js` github-dark theme).
 - **Fonts:** `next/font/google` (Inter, Bodoni Moda, JetBrains Mono).
+- **Cache (optional):** Upstash Redis over REST (`@upstash/redis`) in `lib/cache.js`. It's off when no Upstash env vars are set.
+- **Hosting:** Vercel. `vercel.json` pins functions to `sin1`, which must stay in the same region as Supabase (`ap-southeast-1`).
 - **Dev:** `dotenv` (used by `scripts/` only).
 
 ## Commands
@@ -61,6 +68,7 @@ Seed logins (password `password123`): `maya@devlog.dev`, `leo@devlog.dev`.
 | `NEXT_PUBLIC_APP_URL` | recommended | Used for `metadataBase` (canonical/OG URLs) |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | prod | OTP email delivery. Port 465 = implicit TLS, 587 = STARTTLS |
 | `EMAIL_FROM` | optional | Defaults to `DevLog <SMTP_USER>` |
+| `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | optional | Turns on the Redis cache. `KV_REST_API_URL` / `KV_REST_API_TOKEN` (set by Vercel's Upstash integration) also work |
 
 Without SMTP, **dev** logs the email (with the code) to the server console, and **prod** throws when sending (→ 502), with a warning at startup.
 
@@ -120,7 +128,10 @@ lib/
                 setAuthCookie / clearAuthCookie, publicUser()
   api.js        handler() wrapper (maps PG errors), HttpError + helpers, readJson, readEmail,
                 isValidId (UUID), validateUrl
-  otp.js        issueOtp / issueOtpIfAllowed / consumeOtp (TTL 10m, cooldown 60s, 5 attempts)
+  otp.js        issueOtp / issueOtpIfAllowed / consumeOtp (TTL 10m, cooldown 60s, 5 attempts).
+                Email is sent in after(), so issueOtp must run inside a route handler
+  cache.js      cachedContent(key, load) / bumpContentVersion() / cachedUser / forgetUser.
+                No `@/` imports: scripts/seed.js uses it
   engagement.js likePost / unlikePost / getLikeState, listComments / addComment / deleteComment
                 (published posts only)
   email.js      sendMail (nodemailer; console fallback in dev), sendOtpEmail (HTML + text)
@@ -133,6 +144,7 @@ lib/
   client-api.js apiFetch (browser; credentials: 'include'; throws ApiError)
   redirect.js   safeRedirect (no open redirects), loginUrl
 middleware.js   protects /dashboard, /editor/*, /settings; bounces logged-in users off /login, /register, /verify-email, /forgot-password
+vercel.json     "regions": ["sin1"] — same region as the Supabase DB
 scripts/db-setup.js, scripts/seed.js
 ```
 
@@ -203,8 +215,15 @@ Postgres errors are mapped in `handler()`:
 5. **Every route handler is wrapped in `handler()`** from `lib/api.js` and throws `HttpError`s (`badRequest`, `unauthorized`, `forbidden`, `notFound`). Protected handlers call `requireAuth(request)`.
 6. **Markdown safety:** never add `rehype-raw`. Keep `rehype-sanitize` running *before* `rehype-highlight`. Image and link URLs from users must pass `validateUrl` (http/https only).
 7. **The app must run from a clean clone** following README.md.
-8. **OTP safety:** never store or log a plain code outside the dev console fallback. Never issue a session from `register`; only `verify-email`, `login` (verified users) and `reset-password` set the cookie. `forgot-password` and `resend-otp` must respond the same whether or not the account exists. Keep the attempt counter atomic (`update … set attempts = attempts + 1 where attempts < 5 … returning`), keep the cooldown inside the upsert (`on conflict … do update … where last_sent_at <= …`), and keep codes single-use (`delete … where code_hash = …`, then check `count`).
+8. **OTP safety:** the email is sent in `after()` (post-response). On failure it logs and deletes *that* code (`where code_hash = …`), so Resend isn't blocked. A production server without SMTP must still throw 502 *before* storing a code (`canSendMail()`). Never store or log a plain code outside the dev console fallback. Never issue a session from `register`; only `verify-email`, `login` (verified users) and `reset-password` set the cookie. `forgot-password` and `resend-otp` must respond the same whether or not the account exists. Keep the attempt counter atomic (`update … set attempts = attempts + 1 where attempts < 5 … returning`), keep the cooldown inside the upsert (`on conflict … do update … where last_sent_at <= …`), and keep codes single-use (`delete … where code_hash = …`, then check `count`).
 9. **Engagement safety:** likes/comments only on *published* posts (drafts → 404, via `findPublishedPost`). Comments are plain text rendered by React (never Markdown/HTML). Comment authors are embedded with `_id, name, avatarUrl` only. Counters change only inside the same SQL statement as the like/comment row (CTEs in `lib/engagement.js`). Deleting a post removes its likes, comments and tag links via `ON DELETE CASCADE`.
+10. **Cache safety (`lib/cache.js`):**
+    - Only data that is identical for every visitor goes through `cachedContent()`. Never cache drafts, per-viewer state (like state, dashboard, editor), or free-text search results.
+    - Keys must come from bounded sets: the first `CACHED_PAGES` pages, ids/slugs that exist (`null` isn't cached), and slug length ≤ 200.
+    - **Every write that can change a public page must `await bumpContentVersion()` after its DB write.** Today that's create/update/delete post, like/unlike (only when `count` > 0), add/delete comment, and `updateUser` when name/bio/avatar change.
+    - `updateUser` always calls `forgetUser(id)`.
+    - The cached user object comes from `userColumns()`, so it never contains the password hash.
+    - A Redis failure must never fail a request: `attempt()` falls back to the DB and pauses Redis for 30 s.
 
 ## Architecture conventions
 
@@ -277,13 +296,26 @@ Inspired by a cinematic museum site concept: black canvas, thin vertical grid li
 - **`postgres` is in `serverExternalPackages`** (`next.config.mjs`).
 - **`middleware.js` runs on the edge.** Only import edge-safe modules there (`lib/jwt.js`, not `lib/auth.js` or `lib/db.js`).
 - **`useSearchParams()` in client pages** must sit inside `<Suspense>` (see `app/login/page.js`).
+- **Never use the direct host `db.<ref>.supabase.co` on Vercel.** It only has an IPv6 (AAAA) record, Vercel functions are IPv4-only, and every query fails at once with 503. It works from a home PC that has IPv6, which hides the problem locally. Always use the pooler URI (`postgres.<ref>@aws-0-<region>.pooler.supabase.com:6543`).
 - **"Database unavailable" / 503:** the server log line `[api] Database unavailable (<reason>)` names the cause:
   - `cannot reach the server`: wrong host, or the Supabase project is paused (free projects pause after 7 idle days; resume them in the dashboard).
   - `login rejected` / `Tenant or user not found`: wrong password or project ref in `DATABASE_URL`.
   - `tables are missing`: run `npm run db:setup`.
 - **Why the move off MongoDB (2026-10-17):** Atlas started rejecting connections (TLS alert 80) because this machine's IP was no longer on the Atlas Network Access list. The user chose to migrate rather than re-allowlist.
+- **Windows PowerShell 5.1 `echo … >> file` writes UTF-16LE.** GitHub's "create a repo" quick-start (`echo "# Devlog" >> README.md`) once appended a NUL-laden line to README.md, which made git/grep treat it as binary. Use the Edit/Write tools, or `Out-File -Encoding utf8`.
 - **Local Postgres on Windows** may default to `WIN1252` encoding, and then the seed fails on `♥`/emoji. Create the DB with `--encoding=UTF8`. Supabase is always UTF-8.
 - **Testing OTP locally without SMTP:** start dev with `SMTP_HOST=` (empty) and read the code from the terminal (`[DevLog] SMTP not configured — email not sent`). `next start` runs with NODE_ENV=production, so it needs real SMTP (without it, register → 502).
+  - The code is printed by `after()` a moment *after* the response, so tests should wait about 0.5 s before reading the log.
+- **Testing the Redis cache without Upstash:** point `UPSTASH_REDIS_REST_URL` at a small mock that speaks Upstash's REST protocol. It must handle:
+  - a POST with a JSON command array, and `/pipeline`
+  - `{ result }` replies, base64-encoded when the request has `Upstash-Encoding: base64` (except `"OK"`)
+  - `get`, `set` (ex/nx), `mget`, `incr`, `del`
+  - Use `retry: { retries: 0 }` for no retries; `retry: false` actually tries twice.
+- **Pages with `loading.js` stream:** read the whole body (`res.text()`) before assuming a server render has finished (and finished writing to the cache).
+- **Speed facts (2026-10-17):**
+  - bcrypt cost 12 is about 285 ms with `bcryptjs`. Native `@node-rs/bcrypt` is about 209 ms, which wasn't worth a native dependency.
+  - Gmail SMTP takes about 2–5 s per email, which is why it runs in `after()`.
+  - Function ↔ DB distance matters most: `iad1` → Singapore is about 220 ms per query.
 - **Old JWTs** carry Mongo ObjectId `sub`s. `findUserById` rejects non-UUIDs, so those sessions simply read as logged out.
 - **Writing files through a bash heredoc can collapse `\\` → `\`.** Prefer the Write/Edit tools for JS that contains regexes.
 

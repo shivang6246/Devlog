@@ -6,6 +6,7 @@
  *   DELETE /api/posts/:id    — owner only
  */
 import { sql } from '@/lib/db';
+import { bumpContentVersion } from '@/lib/cache';
 import { forbidden, handler, isValidId, json, notFound, readJson } from '@/lib/api';
 import { requireAuth } from '@/lib/auth';
 import { getPostById, getPublishedPostBySlug } from '@/lib/data';
@@ -43,5 +44,6 @@ export const PUT = handler(async (request, { params }) => {
 export const DELETE = handler(async (request, { params }) => {
   const post = await loadOwnedPost(request, params);
   await sql`delete from posts where id = ${post._id}`;
+  await bumpContentVersion();
   return json({ message: 'Post deleted', id: post._id });
 });
