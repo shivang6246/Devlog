@@ -15,7 +15,7 @@ A full-stack developer blogging platform (a Hashnode clone). **One Next.js app i
 | 6. Email OTP auth (sign-up verification + forgot password) | ✅ done + verified (27 API + 14 browser checks; earlier suites re-run with no regressions) |
 | 8. Likes, comments, share + light/dark mode | ✅ done + verified (36 API + 35 browser checks; all earlier suites and the responsive audit re-run with no regressions) |
 | 9. MongoDB → Supabase Postgres (postgres.js, plain SQL, `db/schema.sql`) | ✅ done + verified (local Postgres 17: 167 API + 18 page + 23 prod-build checks; real Supabase via the transaction pooler: 11-check smoke test). Schema + seed applied to Supabase |
-| 10. Speed: functions in `sin1`, OTP email after the response, optional Upstash Redis cache | ✅ code done + verified locally (15 cache unit + 29 cache integration + 167 API with Redis on + 167 API with Redis off + 11 prod-build checks; Redis outage/slowness, SMTP failure). Uses a mock Upstash REST server; no real Upstash DB yet. ⏳ **not pushed/deployed yet** |
+| 10. Speed: functions in `sin1`, OTP email after the response, optional Upstash Redis cache | ✅ code done + verified locally (15 cache unit + 29 cache integration + 167 API with Redis on + 167 API with Redis off + 11 prod-build checks; Redis outage/slowness, SMTP failure). Uses a mock Upstash REST server. **Deployed 2026-10-17** (commit `2385e34`). Live, measured from India: login 0.6–0.8 s (was ~2 s), feed API ~0.2 s (was ~1 s), sign-up 0.57 s with the email delivered in the background on Vercel. Redis code is live but **off** until an Upstash DB is connected |
 
 Phase 9 was verified on a local Postgres 17 (UTF-8) using `next dev` and `next build && next start`. All API responses keep the old shape (`_id`, camelCase, embedded `author`/`tags`), so no UI code changed. The Playwright browser suite was **not** re-run after the migration.
 
@@ -23,7 +23,7 @@ Phase 9 was verified on a local Postgres 17 (UTF-8) using `next dev` and `next b
 - [x] Supabase project `vghcurikulhxnwtdmxxd` (Singapore). `.env.local` uses the **transaction pooler** `aws-0-ap-southeast-1.pooler.supabase.com:6543`, user `postgres.vghcurikulhxnwtdmxxd`. Schema + seed applied. The old `MONGODB_URI` line is unused and can be deleted. Atlas data was **not** copied over.
 - [ ] **Rotate the Supabase DB password.** It was pasted into a chat on 2026-10-17. Then update `.env.local` and Vercel.
 - [x] Deployed: `https://devlog-iota-green.vercel.app`. Its `DATABASE_URL` is the pooler URI. Verified 2026-10-17: feed, tags, post pages, login, draft 404. The URL is in README.md.
-- [ ] Push phase 10 to `main` so Vercel redeploys. `vercel.json` moves the functions from `iad1` (Washington) to `sin1`, next to the Singapore DB; the 1–3 s pages and slow login came from that distance.
+- [x] Phase 10 is on `main` and live in `sin1`. The old `iad1` (Washington) region against the Singapore DB caused the 1–3 s pages and slow login. Before the move, one home-page request also hung for 60 s; it didn't recur after the deploy. If it does, get the Vercel function log for that request.
 - [ ] Create an Upstash Redis DB (Vercel → Storage → Upstash for Redis, region Singapore, connect to the project), then redeploy. Without it the cache is simply off.
 - [x] SMTP (Gmail app password) set in `.env.local`. Verified 2026-10-17: Gmail accepts the login, and a real sign-up OTP email was sent from the production build.
 - [ ] Deploy to Vercel + Supabase (steps in README.md), then put the live URL in README.md.
